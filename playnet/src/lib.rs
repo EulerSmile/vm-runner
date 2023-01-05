@@ -5,7 +5,7 @@
 
 mod playnet;
 mod rpc;
-mod runtime;
+pub mod runtime;
 mod serde;
 mod types;
 mod utils;

@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use solana_bpf_loader_program::process_instruction as process_bpf_loader_instruction;
 use solana_program_runtime::{
     compute_budget::ComputeBudget, executor_cache::Executors,
-    invoke_context::BuiltinProgram, log_collector::LogCollector, sysvar_cache::SysvarCache,
+    invoke_context::{ BuiltinProgram, ProcessInstructionWithContext},  log_collector::LogCollector, sysvar_cache::SysvarCache,
     timings::ExecuteTimings,
 };
 use solana_sdk::{
@@ -32,7 +32,7 @@ use solana_sdk::{
     signature::Signature,
     slot_history::Slot,
     system_program,
-    sysvar::{self, instructions::construct_instructions_data, Sysvar},
+    sysvar::{self, instructions::{construct_instructions_data, self}, Sysvar},
     transaction::{self, AddressLoader, SanitizedTransaction, TransactionError},
     transaction_context::{
         ExecutionRecord, TransactionAccount, TransactionContext,
@@ -113,11 +113,31 @@ impl PgBank {
             }
         };
 
+        bank.init()
+    }
+
+    pub fn new_with_more(accounts: BankAccounts, genesis_hash: Hash) -> Self {
+        let mut bank = Self {
+            accounts,
+            txs: HashMap::new(),
+            slot: 0,
+            block_height: 0,
+            genesis_hash,
+            latest_blockhash: genesis_hash,
+            builtin_programs: vec![],
+            sysvar_cache: RwLock::new(SysvarCache::default()),
+            feature_set: Rc::new(FeatureSet::default()),
+        };
+
+        bank.init()
+    }
+
+    fn init(mut self) -> Self {
         // Add native accounts
         let mut add_native_programs = |program_id: Pubkey| {
             let mut account = Account::new(1, 0, &native_loader::id());
             account.set_executable(true);
-            bank.accounts.insert(program_id, account);
+            self.accounts.insert(program_id, account);
         };
 
         add_native_programs(bpf_loader::id());
@@ -138,15 +158,15 @@ impl PgBank {
             default
         }
 
-        let clock = add_sysvar_account::<Clock>(&mut bank);
-        let rent = add_sysvar_account::<Rent>(&mut bank);
-        let mut sysvar_cache = bank.sysvar_cache.write().unwrap();
+        let clock = add_sysvar_account::<Clock>(&mut self);
+        let rent = add_sysvar_account::<Rent>(&mut self);
+        let mut sysvar_cache = self.sysvar_cache.write().unwrap();
         sysvar_cache.set_clock(clock);
         sysvar_cache.set_rent(rent);
         drop(sysvar_cache);
 
         // Add builtin programs
-        bank.builtin_programs = vec![
+        self.builtin_programs = vec![
             BuiltinProgram {
                 program_id: bpf_loader::id(),
                 process_instruction: process_bpf_loader_instruction,
@@ -162,9 +182,26 @@ impl PgBank {
         ];
 
         // Feature set
-        bank.feature_set = Rc::new(FeatureSet::default());
+        self.feature_set = Rc::new(FeatureSet::default());
 
-        bank
+        self
+    }
+
+    pub fn add_account(&mut self, key: &Pubkey, account: &Account) {
+        self.accounts.insert(key.clone(), account.clone());
+    }
+
+    pub fn add_builtin(&mut self, name: &str, program_id: &Pubkey, instructions: ProcessInstructionWithContext) {
+        self.builtin_programs.push(BuiltinProgram {
+            program_id: program_id.clone(),
+            process_instruction: instructions,
+        });
+
+        let account = native_loader::create_loadable_account_with_fields(
+            name,
+            (1000000000, 1000),
+        );
+        self.add_account(program_id, &Account::from(account));
     }
 
     pub fn get_slot(&self) -> Slot {
@@ -377,7 +414,7 @@ impl PgBank {
         let feature_set = Arc::new(FeatureSet::default());
         let mut timings = ExecuteTimings::default();
         let blockhash = tx.message().recent_blockhash();
-        let current_accounts_data_len = u64::MAX;
+        let current_accounts_data_len = u32::MAX as u64;
         let mut accumulated_consume_units = 0;
 
         // Get sysvars
@@ -462,6 +499,7 @@ impl PgBank {
             .iter()
             .enumerate()
             .map(|(i, pubkey)| {
+                println!("index: {}, pk: {:?}", i, pubkey);
                 let (account, loaded_programdata_account_size) = if !message.is_non_loader_key(i) {
                     // TODO:
                     // Fill in an empty account for the program slots.
@@ -556,6 +594,10 @@ impl PgBank {
         // accounts.iter().take(message.account_keys.len())
         accounts.append(&mut account_deps);
 
+        println!("accounts[0]: {:?}", accounts[0].0);
+        println!("accounts[1]: {:?}", accounts[1].0);
+        println!("accounts[2]: {:?}", accounts[2].0);
+
         if validated_fee_payer {
             let program_indices = message
                 .instructions()
@@ -602,6 +644,7 @@ impl PgBank {
                     return Err(TransactionError::ProgramAccountNotFound);
                 }
             };
+        println!("program_id: {:?}", program_id);
         let mut depth = 0;
         while !native_loader::check_id(&program_id) {
             if depth >= 5 {
