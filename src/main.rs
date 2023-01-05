@@ -66,11 +66,6 @@ fn main() {
 
     let recent_blockhash = bank.get_latest_blockhash();
 
-    // let check_account_is_rent_exempt = |pubkey: &Pubkey| -> bool {
-    //     let account = bank.get_account(pubkey).unwrap();
-    //     Rent::default().is_exempt(account.lamports(), account.data().len())
-    // };
-
     // RentPaying account can be left as Uninitialized, in other RentPaying states, or RentExempt
     let tx = create_mock_transfer(
         &mint_keypair,        // payer
@@ -80,9 +75,21 @@ fn main() {
         mock_program_id,
         recent_blockhash,
     );
-    println!("\n\npayer: {:?}", mint_keypair.pubkey());
-    println!("from: {:?}", rent_exempt_account.pubkey());
-    println!("to: {:?}", mint_keypair.pubkey());
+    println!(
+        "\n\npayer: {:?}, account: {:?}",
+        mint_keypair.pubkey(),
+        bank.get_account(&mint_keypair.pubkey())
+    );
+    println!(
+        "from: {:?}, account: {:?}",
+        rent_exempt_account.pubkey(),
+        bank.get_account(&rent_exempt_account.pubkey())
+    );
+    println!(
+        "to: {:?}, account: {:?}",
+        mint_keypair.pubkey(),
+        bank.get_account(&mint_keypair.pubkey())
+    );
 
     println!("Transaction account keys:");
     let _ = tx
@@ -98,7 +105,23 @@ fn main() {
     let tx = SanitizedTransaction::try_from_legacy_transaction(tx).unwrap();
     let result = bank.process_tx(tx);
     assert!(result.is_ok());
-    // assert!(!check_account_is_rent_exempt(&rent_paying_account.pubkey()));
+
+    println!("After transaction:");
+    println!(
+        "payer: {:?}, account: {:?}",
+        mint_keypair.pubkey(),
+        bank.get_account(&mint_keypair.pubkey())
+    );
+    println!(
+        "from: {:?}, account: {:?}",
+        rent_exempt_account.pubkey(),
+        bank.get_account(&rent_exempt_account.pubkey())
+    );
+    println!(
+        "to: {:?}, account: {:?}",
+        mint_keypair.pubkey(),
+        bank.get_account(&mint_keypair.pubkey())
+    );
     println!("all things good!");
 }
 

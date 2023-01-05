@@ -20,12 +20,15 @@ use solana_sdk::{
     bpf_loader_upgradeable::{self, UpgradeableLoaderState},
     clock::Clock,
     feature_set::{self, FeatureSet},
+    fee::FeeStructure,
     hash::Hash,
     instruction::CompiledInstruction,
     message::{
         v0::{LoadedAddresses, MessageAddressTableLookup},
         AddressLoaderError, SanitizedMessage,
     },
+    ed25519_program,
+    secp256k1_program,
     native_loader,
     pubkey::Pubkey,
     rent::Rent,
@@ -252,7 +255,80 @@ impl PgBank {
             .checked_mul(PgBank::LAMPORTS_PER_SIGNATURE)
     }
 
+    fn get_num_signatures_in_message(message: &SanitizedMessage) -> u64 {
+        let mut num_signatures = u64::from(message.header().num_required_signatures);
+        // This next part is really calculating the number of pre-processor
+        // operations being done and treating them like a signature
+        for (program_id, instruction) in message.program_instructions_iter() {
+            if secp256k1_program::check_id(program_id) || ed25519_program::check_id(program_id) {
+                if let Some(num_verifies) = instruction.data.first() {
+                    num_signatures = num_signatures.saturating_add(u64::from(*num_verifies));
+                }
+            }
+        }
+        num_signatures
+    }
+
+    fn get_num_write_locks_in_message(message: &SanitizedMessage) -> u64 {
+        message
+            .account_keys()
+            .len()
+            .saturating_sub(message.num_readonly_accounts()) as u64
+    }
+
+    /// Calculate fee for `SanitizedMessage`
+    pub fn calculate_fee(
+        message: &SanitizedMessage,
+        lamports_per_signature: u64,
+        fee_structure: &FeeStructure,
+        support_set_compute_unit_price_ix: bool,
+        use_default_units_per_instruction: bool,
+    ) -> u64 {
+        // Fee based on compute units and signatures
+        const BASE_CONGESTION: f64 = 5_000.0;
+        let current_congestion = BASE_CONGESTION.max(lamports_per_signature as f64);
+        let congestion_multiplier = if lamports_per_signature == 0 {
+            0.0 // test only
+        } else {
+            BASE_CONGESTION / current_congestion
+        };
+
+        let mut compute_budget = ComputeBudget::default();
+        let prioritization_fee_details = compute_budget
+            .process_instructions(
+                message.program_instructions_iter(),
+                use_default_units_per_instruction,
+                support_set_compute_unit_price_ix,
+            )
+            .unwrap_or_default();
+        let prioritization_fee = prioritization_fee_details.get_fee();
+        let signature_fee = Self::get_num_signatures_in_message(message)
+            .saturating_mul(fee_structure.lamports_per_signature);
+        let write_lock_fee = Self::get_num_write_locks_in_message(message)
+            .saturating_mul(fee_structure.lamports_per_write_lock);
+        let compute_fee = fee_structure
+            .compute_fee_bins
+            .iter()
+            .find(|bin| compute_budget.compute_unit_limit <= bin.limit)
+            .map(|bin| bin.fee)
+            .unwrap_or_else(|| {
+                fee_structure
+                    .compute_fee_bins
+                    .last()
+                    .map(|bin| bin.fee)
+                    .unwrap_or_default()
+            });
+
+        ((prioritization_fee
+            .saturating_add(signature_fee)
+            .saturating_add(write_lock_fee)
+            .saturating_add(compute_fee) as f64)
+            * congestion_multiplier)
+            .round() as u64
+    }
+
     pub fn simulate_tx(&self, tx: &SanitizedTransaction) -> SimulateTransactionResult {
+        // let fee = calculate_fee(tx.message());
         let mut loaded_tx = match self.load_tx(tx) {
             Ok(loaded_tx) => loaded_tx,
             Err(err) => return SimulateTransactionResult::new_error(err),
