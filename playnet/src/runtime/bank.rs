@@ -35,7 +35,7 @@ use solana_sdk::{
     signature::Signature,
     slot_history::Slot,
     system_program,
-    sysvar::{self, instructions::{construct_instructions_data, self}, Sysvar},
+    sysvar::{self, instructions::{construct_instructions_data}, Sysvar},
     transaction::{self, AddressLoader, SanitizedTransaction, TransactionError},
     transaction_context::{
         ExecutionRecord, TransactionAccount, TransactionContext,
@@ -98,7 +98,7 @@ impl PgBank {
     const LAMPORTS_PER_SIGNATURE: u64 = 0;
 
     pub fn new(maybe_bank_string: Option<String>) -> Self {
-        let mut bank = match maybe_bank_string {
+        let bank = match maybe_bank_string {
             Some(bank_string) => serde_json::from_str::<Self>(&bank_string).unwrap(),
             None => {
                 let genesis_hash = create_blockhash(b"playnet");
@@ -120,7 +120,7 @@ impl PgBank {
     }
 
     pub fn new_with_more(accounts: BankAccounts, genesis_hash: Hash) -> Self {
-        let mut bank = Self {
+        let bank = Self {
             accounts,
             txs: HashMap::new(),
             slot: 0,
